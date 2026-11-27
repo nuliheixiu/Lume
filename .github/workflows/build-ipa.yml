@@ -14,8 +14,10 @@ jobs:
 
       - name: Prepare local Kit stub
         run: |
-          mkdir -p LumeRecorder/Kit/Sources/Kit
-          cat << 'EOF' > LumeRecorder/Kit/Package.swift
+          pwd
+          for dir in "../LumeRecorder/Kit" "LumeRecorder/Kit"; do
+            mkdir -p "$dir/Sources/Kit"
+            cat << 'EOF' > "$dir/Package.swift"
           // swift-tools-version: 5.9
           import PackageDescription
 
@@ -30,8 +32,9 @@ jobs:
               ]
           )
           EOF
-          touch LumeRecorder/Kit/Sources/Kit/Placeholder.swift
-          ls -la LumeRecorder/Kit
+            touch "$dir/Sources/Kit/Placeholder.swift"
+          done
+          ls -la ../LumeRecorder/Kit
 
       - name: Build unsigned iOS app
         run: |
