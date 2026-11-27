@@ -14,34 +14,13 @@ jobs:
 
       - name: Prepare local package stubs
         run: |
-          pwd
-          create_stub() {
-            local base_dir="$1"
-            local pkg_name="$2"
-            mkdir -p "$base_dir/Sources/$pkg_name"
-            cat << EOF > "$base_dir/Package.swift"
-// swift-tools-version: 5.9
-import PackageDescription
-
-let package = Package(
-    name: "$pkg_name",
-    platforms: [.iOS(.v16), .macOS(.v13)],
-    products: [
-        .library(name: "$pkg_name", targets: ["$pkg_name"])
-    ],
-    targets: [
-        .target(name: "$pkg_name")
-    ]
-)
-EOF
-            touch "$base_dir/Sources/$pkg_name/Placeholder.swift"
-          }
-
-          create_stub "../LumeRecorder/Kit" "Kit"
-          create_stub "LumeRecorder/Kit" "Kit"
-          create_stub "../LumeCloud/LumeCloudKit" "LumeCloudKit"
-          create_stub "LumeCloud/LumeCloudKit" "LumeCloudKit"
-          ls -la ../LumeRecorder/Kit ../LumeCloud/LumeCloudKit
+          for pkg in "../LumeRecorder/Kit:Kit" "LumeRecorder/Kit:Kit" "../LumeCloud/LumeCloudKit:LumeCloudKit" "LumeCloud/LumeCloudKit:LumeCloudKit"; do
+            dir="${pkg%%:*}"
+            name="${pkg##*:}"
+            mkdir -p "$dir/Sources/$name"
+            printf '// swift-tools-version: 5.9\nimport PackageDescription\nlet package = Package(name: "%s", platforms: [.iOS(.v16), .macOS(.v13)], products: [.library(name: "%s", targets: ["%s"])], targets: [.target(name: "%s")])\n' "$name" "$name" "$name" "$name" > "$dir/Package.swift"
+            touch "$dir/Sources/$name/Placeholder.swift"
+          done
 
       - name: Build unsigned iOS app
         run: |
