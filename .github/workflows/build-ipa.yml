@@ -1,3 +1,4 @@
+```yaml
 name: Build Lume IPA
 
 on:
@@ -24,6 +25,7 @@ jobs:
             mkdir -p "$dir/Sources/$prod_name"
             printf '// swift-tools-version: 5.9\nimport PackageDescription\nlet package = Package(name: "%s", platforms: [.iOS(.v16), .macOS(.v13)], products: [.library(name: "%s", targets: ["%s"])], targets: [.target(name: "%s", path: "Sources/%s")])\n' "$pkg_name" "$prod_name" "$prod_name" "$prod_name" "$prod_name" > "$dir/Package.swift"
             touch "$dir/Sources/$prod_name/Placeholder.swift"
+            echo "Prepared stub: $dir (package: $pkg_name, product: $prod_name)"
           }
 
           write_pkg "../LumeRecorder/Kit" "Kit" "LumeRecorderKit"
@@ -85,12 +87,15 @@ jobs:
             -scheme "$SCHEME" \
             -derivedDataPath build/DerivedData
 
+          chmod -R u+w build/DerivedData/SourcePackages/checkouts || true
+
           python3 - << 'PY'
-          import glob
+          import glob, os, stat
 
           files = glob.glob("build/DerivedData/SourcePackages/checkouts/**/Sources/AetherEngine/Diagnostics/PerFrameBenchmark.swift", recursive=True)
           for path in files:
               print("Inspecting:", path)
+              os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
               with open(path, "r", encoding="utf-8", errors="ignore") as f:
                   lines = f.readlines()
 
@@ -99,13 +104,12 @@ jobs:
               for idx in range(start, end):
                   print(f"{idx + 1}: {lines[idx]}", end="")
 
-              # 若第383行附近存在 nals.flatMap { nal in，尝试加上显式返回类型标注缩小推断范围
               for i in range(max(0, 375), min(len(lines), 395)):
                   if "nals.flatMap" in lines[i] and "{" in lines[i] and "->" not in lines[i]:
                       lines[i] = lines[i].replace("{ nal in", "{ (nal: Any) -> [Any] in")
                       with open(path, "w", encoding="utf-8") as f:
                           f.writelines(lines)
-                      print(f"Annotated closure at line {i + 1}")
+                      print(f"Patched closure at line {i + 1}")
                       break
           PY
 
@@ -134,3 +138,5 @@ jobs:
         with:
           name: Lume-ipa
           path: Lume-unsigned.ipa
+
+```
