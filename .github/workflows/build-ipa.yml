@@ -14,19 +14,21 @@ jobs:
 
       - name: Prepare local package stubs
         run: |
-          make_stub() {
-            local target_dir="$1"
-            local pkg_name
-            pkg_name=$(basename "$target_dir")
-            mkdir -p "$target_dir/Sources/$pkg_name"
-            printf '// swift-tools-version: 5.9\nimport PackageDescription\nlet package = Package(name: "%s", platforms: [.iOS(.v16), .macOS(.v13)], products: [.library(name: "%s", targets: ["%s"])], targets: [.target(name: "%s")])\n' "$pkg_name" "$pkg_name" "$pkg_name" "$pkg_name" > "$target_dir/Package.swift"
-            touch "$target_dir/Sources/$pkg_name/Placeholder.swift"
-            echo "Created stub at: $target_dir (name: $pkg_name)"
+          write_pkg() {
+            local dir="$1"
+            local pkg_name="$2"
+            local prod_name="$3"
+            mkdir -p "$dir/Sources/$prod_name"
+            printf '// swift-tools-version: 5.9\nimport PackageDescription\nlet package = Package(name: "%s", platforms: [.iOS(.v16), .macOS(.v13)], products: [.library(name: "%s", targets: ["%s"])], targets: [.target(name: "%s", path: "Sources/%s")])\n' "$pkg_name" "$prod_name" "$prod_name" "$prod_name" "$prod_name" > "$dir/Package.swift"
+            touch "$dir/Sources/$prod_name/Placeholder.swift"
           }
 
-          for fixed_dir in "../LumeRecorder/Kit" "LumeRecorder/Kit" "../LumeCloud/LumeCloudKit" "LumeCloud/LumeCloudKit" "../LumeEngine" "LumeEngine"; do
-            make_stub "$fixed_dir"
-          done
+          write_pkg "../LumeRecorder/Kit" "Kit" "LumeRecorderKit"
+          write_pkg "LumeRecorder/Kit" "Kit" "LumeRecorderKit"
+          write_pkg "../LumeCloud/LumeCloudKit" "LumeCloudKit" "LumeCloudKit"
+          write_pkg "LumeCloud/LumeCloudKit" "LumeCloudKit" "LumeCloudKit"
+          write_pkg "../LumeEngine" "LumeEngine" "LumeEngine"
+          write_pkg "LumeEngine" "LumeEngine" "LumeEngine"
 
           python3 - << 'PY'
           import os, re
@@ -59,7 +61,6 @@ jobs:
       - name: Build unsigned iOS app
         run: |
           xcodebuild -list -json > xcode_list.json
-          cat xcode_list.json
           SCHEME=$(python3 - << 'PY'
           import json
           d = json.load(open("xcode_list.json"))
