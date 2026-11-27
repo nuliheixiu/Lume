@@ -9,6 +9,7 @@ permissions:
 jobs:
   build-ios:
     runs-on: macos-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -31,100 +32,36 @@ jobs:
 
           xcodebuild -version
 
-      - name: Prepare missing local package stubs
+      - name: Checkout required sibling packages
         shell: bash
         run: |
           set -euo pipefail
 
-          write_pkg() {
-            local dir="$1"
-            local pkg_name="$2"
-            local product_name="$3"
+          PARENT_DIR="$(cd "$GITHUB_WORKSPACE/.." && pwd)"
 
-            if [[ -f "$dir/Package.swift" ]]; then
-              echo "Using existing package: $dir"
-              return
-            fi
+          echo "Repository workspace: $GITHUB_WORKSPACE"
+          echo "Sibling package directory: $PARENT_DIR"
 
-            mkdir -p "$dir/Sources/$product_name"
-            cat > "$dir/Package.swift" <<EOF
-          // swift-tools-version: 5.9
-          import PackageDescription
+          git clone --depth 1 --branch main \
+            https://github.com/bilipp/LumeEngine.git \
+            "$PARENT_DIR/LumeEngine"
 
-          let package = Package(
-              name: "$pkg_name",
-              platforms: [.iOS(.v16), .macOS(.v13)],
-              products: [
-                  .library(name: "$product_name", targets: ["$product_name"])
-              ],
-              targets: [
-                  .target(name: "$product_name")
-              ]
-          )
-          EOF
-            touch "$dir/Sources/$product_name/Placeholder.swift"
-            echo "Created package stub: $dir"
-          }
+          git clone --depth 1 --branch main \
+            https://github.com/bilipp/LumeCloud.git \
+            "$PARENT_DIR/LumeCloud"
 
-          write_pkg "../LumeRecorder/Kit" "Kit" "LumeRecorderKit"
-          write_pkg "LumeRecorder/Kit" "Kit" "LumeRecorderKit"
-          write_pkg "../LumeCloud/LumeCloudKit" "LumeCloudKit" "LumeCloudKit"
-          write_pkg "LumeCloud/LumeCloudKit" "LumeCloudKit" "LumeCloudKit"
-          write_pkg "../LumeEngine" "LumeEngine" "LumeEngine"
-          write_pkg "LumeEngine" "LumeEngine" "LumeEngine"
+          git clone --depth 1 --branch main \
+            https://github.com/bilipp/LumeRecorder.git \
+            "$PARENT_DIR/LumeRecorder"
 
-          # Create a minimal stub for any other missing sibling package paths
-          # referenced by the project. Existing package manifests are preserved.
-          python3 - <<'PY'
-          import os
-          import re
+          test -f "$PARENT_DIR/LumeEngine/Package.swift"
+          test -f "$PARENT_DIR/LumeCloud/LumeCloudKit/Package.swift"
+          test -f "$PARENT_DIR/LumeRecorder/Kit/Package.swift"
 
-          pattern = re.compile(r'path:\s*"(\.\./[^"]+)"')
-          referenced_paths = set()
-
-          for root, dirs, files in os.walk("."):
-              dirs[:] = [directory for directory in dirs if directory not in {".git", "build"}]
-              for filename in files:
-                  if not filename.endswith((".pbxproj", ".swift", "Package.swift")):
-                      continue
-
-                  path = os.path.join(root, filename)
-                  try:
-                      with open(path, encoding="utf-8", errors="ignore") as source:
-                          referenced_paths.update(
-                              os.path.normpath(match) for match in pattern.findall(source.read())
-                          )
-                  except OSError:
-                      pass
-
-          for package_path in sorted(referenced_paths):
-              if os.path.isfile(os.path.join(package_path, "Package.swift")):
-                  continue
-
-              package_name = os.path.basename(package_path)
-              source_dir = os.path.join(package_path, "Sources", package_name)
-              os.makedirs(source_dir, exist_ok=True)
-
-              manifest = f'''// swift-tools-version: 5.9
-          import PackageDescription
-
-          let package = Package(
-              name: "{package_name}",
-              platforms: [.iOS(.v16), .macOS(.v13)],
-              products: [
-                  .library(name: "{package_name}", targets: ["{package_name}"])
-              ],
-              targets: [
-                  .target(name: "{package_name}")
-              ]
-          )
-          '''
-              with open(os.path.join(package_path, "Package.swift"), "w", encoding="utf-8") as output:
-                  output.write(manifest)
-
-              open(os.path.join(source_dir, "Placeholder.swift"), "a").close()
-              print(f"Created package stub: {package_path}")
-          PY
+          echo "Verified required local packages:"
+          echo "  $PARENT_DIR/LumeEngine"
+          echo "  $PARENT_DIR/LumeCloud/LumeCloudKit"
+          echo "  $PARENT_DIR/LumeRecorder/Kit"
 
       - name: Resolve dependencies
         shell: bash
@@ -159,56 +96,56 @@ jobs:
               )
 
           replacement = """        let sliceLength = sliceBytes / 4
-                  var sliceNALs: [[UInt8]] = []
-                  sliceNALs.reserveCapacity(4)
+              var sliceNALs: [[UInt8]] = []
+              sliceNALs.reserveCapacity(4)
 
-                  for i in 0 ..< 4 {
-                      var slice: [UInt8] = [19 << 1, 1]
-                      slice.reserveCapacity(sliceLength + 2)
+              for i in 0 ..< 4 {
+                  var slice: [UInt8] = [19 << 1, 1]
+                  slice.reserveCapacity(sliceLength + 2)
 
-                      for j in 0 ..< sliceLength {
-                          let value = UInt8(truncatingIfNeeded: j &* 7 &+ i)
-                          slice.append((0x11 &+ value) | 1)
-                      }
-
-                      sliceNALs.append(slice)
+                  for j in 0 ..< sliceLength {
+                      let value = UInt8(truncatingIfNeeded: j &* 7 &+ i)
+                      slice.append((0x11 &+ value) | 1)
                   }
 
-                  var nals: [[UInt8]] = [[35 << 1, 1, 0x50], sei]
-                  nals.append(contentsOf: sliceNALs)
+                  sliceNALs.append(slice)
+              }
 
-                  var totalSize = 0
-                  for nal in nals {
-                      totalSize += 4 + nal.count
-                  }
+              var nals: [[UInt8]] = [[35 << 1, 1, 0x50], sei]
+              nals.append(contentsOf: sliceNALs)
 
-                  var packet: [UInt8] = []
-                  packet.reserveCapacity(totalSize)
+              var totalSize = 0
+              for nal in nals {
+                  totalSize += 4 + nal.count
+              }
 
-                  for nal in nals {
-                      let length = nal.count
-                      packet.append(UInt8((length >> 24) & 0xFF))
-                      packet.append(UInt8((length >> 16) & 0xFF))
-                      packet.append(UInt8((length >> 8) & 0xFF))
-                      packet.append(UInt8(length & 0xFF))
-                      packet.append(contentsOf: nal)
-                  }
+              var packet: [UInt8] = []
+              packet.reserveCapacity(totalSize)
 
-                  return packet"""
+              for nal in nals {
+                  let length = nal.count
+                  packet.append(UInt8((length >> 24) & 0xFF))
+                  packet.append(UInt8((length >> 16) & 0xFF))
+                  packet.append(UInt8((length >> 8) & 0xFF))
+                  packet.append(UInt8(length & 0xFF))
+                  packet.append(contentsOf: nal)
+              }
+
+              return packet"""
 
           start_marker = "        let nals: [[UInt8]] ="
           end_marker = "\n    }\n\n    private static func deviceName()"
 
           old_median = """            let sorted = steps.map { $0[keyPath: key] }.sorted()
-                      return sorted.isEmpty ? 0 : sorted[sorted.count / 2] * 1000"""
+              return sorted.isEmpty ? 0 : sorted[sorted.count / 2] * 1000"""
 
           new_median = """            var values: [Double] = []
-                      values.reserveCapacity(steps.count)
-                      for step in steps {
-                          values.append(step[keyPath: key])
-                      }
-                      values.sort()
-                      return values.isEmpty ? 0 : values[values.count / 2] * 1000"""
+              values.reserveCapacity(steps.count)
+              for step in steps {
+                  values.append(step[keyPath: key])
+              }
+              values.sort()
+              return values.isEmpty ? 0 : values[values.count / 2] * 1000"""
 
           for path in files:
               with open(path, encoding="utf-8") as source:
@@ -221,11 +158,15 @@ jobs:
               if "var totalSize = 0" not in text or "sliceNALs.reserveCapacity(4)" not in text:
                   start = text.find(start_marker)
                   if start == -1:
-                      sys.exit(f"Could not find the expected NAL construction in {path}.")
+                      sys.exit(
+                          f"Could not find the expected NAL construction in {path}."
+                      )
 
                   end = text.find(end_marker, start)
                   if end == -1:
-                      sys.exit(f"Could not find the end of keyFramePacket() in {path}.")
+                      sys.exit(
+                          f"Could not find the end of keyFramePacket() in {path}."
+                      )
 
                   text = text[:start] + replacement + text[end:]
                   changed = True
@@ -238,11 +179,13 @@ jobs:
               if old_median in text:
                   text = text.replace(old_median, new_median, 1)
                   changed = True
-                  print(f"Patched Swift 6 actor-isolation error in: {path}")
+                  print(f"Patched Swift 6 actor-isolation code in: {path}")
               elif "values.append(step[keyPath: key])" in text:
                   print(f"Actor-isolation code is already patched: {path}")
               else:
-                  sys.exit(f"Could not find the expected median code in {path}.")
+                  sys.exit(
+                      f"Could not find the expected median code in {path}."
+                  )
 
               if changed:
                   current_mode = os.stat(path).st_mode
@@ -250,7 +193,6 @@ jobs:
 
                   with open(path, "w", encoding="utf-8") as output:
                       output.write(text)
-
           PY
 
       - name: Build unsigned iOS app
