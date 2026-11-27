@@ -7,20 +7,23 @@ jobs:
   build-ios:
     runs-on: macos-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout main repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: List project files and scripts
+      - name: Fetch local package dependencies
         run: |
           ls -la
-          ls -la build/scripts 2>/dev/null || true
-          xcodebuild -list || true
+          if [ ! -d "LumeRecorder" ]; then
+            git clone --depth 1 https://github.com/bilipp/LumeRecorder.git LumeRecorder || true
+          fi
+          ls -la LumeRecorder 2>/dev/null || true
 
       - name: Build unsigned iOS app
         run: |
-          SCHEME=$(xcodebuild -list -json | python3 -c "import sys, json; d=json.load(sys.stdin); p=d.get('project') or d.get('workspace'); print((p.get('schemes') or ['Lume'])[0])")
+          xcodebuild -list -json > xcode_list.json
+          SCHEME=$(python3 -c "import sys, json; d=json.load(open('xcode_list.json')); p=d.get('project') or d.get('workspace') or {}; schemes=p.get('schemes') or []; print(schemes[0] if schemes else 'Lume')")
           echo "Using scheme: $SCHEME"
           xcodebuild \
             -scheme "$SCHEME" \
