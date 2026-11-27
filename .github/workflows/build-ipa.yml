@@ -14,13 +14,47 @@ jobs:
 
       - name: Prepare local package stubs
         run: |
-          for pkg in "../LumeRecorder/Kit:Kit" "LumeRecorder/Kit:Kit" "../LumeCloud/LumeCloudKit:LumeCloudKit" "LumeCloud/LumeCloudKit:LumeCloudKit"; do
-            dir="${pkg%%:*}"
-            name="${pkg##*:}"
-            mkdir -p "$dir/Sources/$name"
-            printf '// swift-tools-version: 5.9\nimport PackageDescription\nlet package = Package(name: "%s", platforms: [.iOS(.v16), .macOS(.v13)], products: [.library(name: "%s", targets: ["%s"])], targets: [.target(name: "%s")])\n' "$name" "$name" "$name" "$name" > "$dir/Package.swift"
-            touch "$dir/Sources/$name/Placeholder.swift"
+          make_stub() {
+            local target_dir="$1"
+            local pkg_name
+            pkg_name=$(basename "$target_dir")
+            mkdir -p "$target_dir/Sources/$pkg_name"
+            printf '// swift-tools-version: 5.9\nimport PackageDescription\nlet package = Package(name: "%s", platforms: [.iOS(.v16), .macOS(.v13)], products: [.library(name: "%s", targets: ["%s"])], targets: [.target(name: "%s")])\n' "$pkg_name" "$pkg_name" "$pkg_name" "$pkg_name" > "$target_dir/Package.swift"
+            touch "$target_dir/Sources/$pkg_name/Placeholder.swift"
+            echo "Created stub at: $target_dir (name: $pkg_name)"
+          }
+
+          for fixed_dir in "../LumeRecorder/Kit" "LumeRecorder/Kit" "../LumeCloud/LumeCloudKit" "LumeCloud/LumeCloudKit" "../LumeEngine" "LumeEngine"; do
+            make_stub "$fixed_dir"
           done
+
+          python3 - << 'PY'
+          import os, re, subprocess
+
+          pattern = re.compile(r'path:\s*"(\.\./[^"]+)"')
+          found = set()
+          for root, _, files in os.walk("."):
+              if ".git" in root or "build" in root:
+                  continue
+              for fn in files:
+                  if fn.endswith((".pbxproj", ".swift", "Package.swift")):
+                      p = os.path.join(root, fn)
+                      try:
+                          txt = open(p, encoding="utf-8", errors="ignore").read()
+                          for m in pattern.findall(txt):
+                              found.add(os.path.normpath(m))
+                      except OSError:
+                          pass
+
+          for rel in sorted(found):
+              if not os.path.exists(rel):
+                  pkg = os.path.basename(rel)
+                  os.makedirs(os.path.join(rel, "Sources", pkg), exist_ok=True)
+                  with open(os.path.join(rel, "Package.swift"), "w", encoding="utf-8") as f:
+                      f.write(f'// swift-tools-version: 5.9\nimport PackageDescription\nlet package = Package(name: "{pkg}", platforms: [.iOS(.v16), .macOS(.v13)], products: [.library(name: "{pkg}", targets: ["{pkg}"])], targets: [.target(name: "{pkg}")])\n')
+                  open(os.path.join(rel, "Sources", pkg, "Placeholder.swift"), "w").close()
+                  print("Auto-stubbed:", rel)
+          PY
 
       - name: Build unsigned iOS app
         run: |
