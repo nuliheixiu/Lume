@@ -199,31 +199,58 @@ jobs:
           start_marker = "        let nals: [[UInt8]] ="
           end_marker = "\n    }\n\n    private static func deviceName()"
 
+          old_median = """            let sorted = steps.map { $0[keyPath: key] }.sorted()
+                      return sorted.isEmpty ? 0 : sorted[sorted.count / 2] * 1000"""
+
+          new_median = """            var values: [Double] = []
+                      values.reserveCapacity(steps.count)
+                      for step in steps {
+                          values.append(step[keyPath: key])
+                      }
+                      values.sort()
+                      return values.isEmpty ? 0 : values[values.count / 2] * 1000"""
+
           for path in files:
               with open(path, encoding="utf-8") as source:
                   text = source.read()
 
-              if "var totalSize = 0" in text and "sliceNALs.reserveCapacity(4)" in text:
-                  print(f"Benchmark code is already patched: {path}")
-                  continue
+              changed = False
 
-              start = text.find(start_marker)
-              if start == -1:
-                  sys.exit(f"Could not find the expected NAL construction in {path}.")
+              # Patch the upstream NAL construction if it has not already
+              # been patched.
+              if "var totalSize = 0" not in text or "sliceNALs.reserveCapacity(4)" not in text:
+                  start = text.find(start_marker)
+                  if start == -1:
+                      sys.exit(f"Could not find the expected NAL construction in {path}.")
 
-              end = text.find(end_marker, start)
-              if end == -1:
-                  sys.exit(f"Could not find the end of keyFramePacket() in {path}.")
+                  end = text.find(end_marker, start)
+                  if end == -1:
+                      sys.exit(f"Could not find the end of keyFramePacket() in {path}.")
 
-              patched = text[:start] + replacement + text[end:]
+                  text = text[:start] + replacement + text[end:]
+                  changed = True
+                  print(f"Patched NAL construction in: {path}")
+              else:
+                  print(f"NAL construction is already patched: {path}")
 
-              current_mode = os.stat(path).st_mode
-              os.chmod(path, current_mode | stat.S_IWUSR)
+              # Avoid capturing the key path in steps.map's actor-isolated
+              # closure. A normal loop keeps the access in this function.
+              if old_median in text:
+                  text = text.replace(old_median, new_median, 1)
+                  changed = True
+                  print(f"Patched Swift 6 actor-isolation error in: {path}")
+              elif "values.append(step[keyPath: key])" in text:
+                  print(f"Actor-isolation code is already patched: {path}")
+              else:
+                  sys.exit(f"Could not find the expected median code in {path}.")
 
-              with open(path, "w", encoding="utf-8") as output:
-                  output.write(patched)
+              if changed:
+                  current_mode = os.stat(path).st_mode
+                  os.chmod(path, current_mode | stat.S_IWUSR)
 
-              print(f"Patched benchmark code for Swift compiler: {path}")
+                  with open(path, "w", encoding="utf-8") as output:
+                      output.write(text)
+
           PY
 
       - name: Build unsigned iOS app
