@@ -89,27 +89,58 @@ jobs:
           chmod -R u+w build/DerivedData/SourcePackages/checkouts || true
 
           python3 - << 'PY'
-          import glob, os, stat
+          import glob, os, re, stat
 
-          files = glob.glob("build/DerivedData/SourcePackages/checkouts/**/Sources/AetherEngine/Diagnostics/PerFrameBenchmark.swift", recursive=True)
+          files = glob.glob("build/**/PerFrameBenchmark.swift", recursive=True)
+          if not files:
+              print("WARNING: PerFrameBenchmark.swift not found under build/")
+
           for path in files:
               print("Inspecting:", path)
               os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
               with open(path, "r", encoding="utf-8", errors="ignore") as f:
                   lines = f.readlines()
 
-              start = max(0, 370)
-              end = min(len(lines), 415)
+              start = max(0, 368)
+              end = min(len(lines), 405)
+              print("=== PerFrameBenchmark.swift lines 369..405 ===")
               for idx in range(start, end):
                   print(f"{idx + 1}: {lines[idx]}", end="")
 
-              for i in range(max(0, 375), min(len(lines), 395)):
-                  if "nals.flatMap" in lines[i] and "{" in lines[i] and "->" not in lines[i]:
-                      lines[i] = lines[i].replace("{ nal in", "{ (nal: Any) -> [Any] in")
-                      with open(path, "w", encoding="utf-8") as f:
-                          f.writelines(lines)
-                      print(f"Patched closure at line {i + 1}")
+              # 在 370..396 行范围内查找 flatMap
+              target_idx = None
+              for i in range(max(0, 369), min(len(lines), 396)):
+                  if "flatMap" in lines[i]:
+                      target_idx = i
                       break
+
+              if target_idx is not None:
+                  line = lines[target_idx]
+                  indent = line[:len(line) - len(line.lstrip())]
+                  # 匹配 `{ nal in` 或 `nal in` 或 `{`
+                  if re.search(r'\bnal\s+in\b', line):
+                      new_line = re.sub(r'(\{\s*)nal(\s+in)', r'\1(nal: Any)\2 -> [Any]', line, count=1)
+                      lines[target_idx] = new_line
+                      print(f"PATCH APPLIED (explicit closure type) at line {target_idx + 1}")
+                  elif "{" in line:
+                      lines[target_idx] = line.replace("{", "{ (item: Any) -> [Any] in", 1)
+                      print(f"PATCH APPLIED (closure param+return) at line {target_idx + 1}")
+                  else:
+                      # 若 `{` 在下一行，在下一行补闭包签名
+                      if target_idx + 1 < len(lines) and "{" in lines[target_idx + 1]:
+                          next_l = lines[target_idx + 1]
+                          if re.search(r'\bnal\s+in\b', next_l):
+                              lines[target_idx + 1] = re.sub(r'(\{\s*)nal(\s+in)', r'\1(nal: Any)\2 -> [Any]', next_l, count=1)
+                          else:
+                              lines[target_idx + 1] = next_l.replace("{", "{ (nal: Any) -> [Any] in", 1)
+                          print(f"PATCH APPLIED (multiline closure) at line {target_idx + 2}")
+                      else:
+                          print(f"NO MATCH around flatMap at line {target_idx + 1}")
+
+                  with open(path, "w", encoding="utf-8") as f:
+                      f.writelines(lines)
+              else:
+                  print("NO MATCH: 'flatMap' not found in lines 370..396")
           PY
 
       - name: Build unsigned iOS app
