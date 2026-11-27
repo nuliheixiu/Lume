@@ -12,13 +12,26 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Fetch local package dependencies
+      - name: Prepare local Kit stub
         run: |
-          ls -la
-          if [ ! -d "LumeRecorder" ]; then
-            git clone --depth 1 https://github.com/bilipp/LumeRecorder.git LumeRecorder || true
-          fi
-          ls -la LumeRecorder 2>/dev/null || true
+          mkdir -p LumeRecorder/Kit/Sources/Kit
+          cat << 'EOF' > LumeRecorder/Kit/Package.swift
+          // swift-tools-version: 5.9
+          import PackageDescription
+
+          let package = Package(
+              name: "Kit",
+              platforms: [.iOS(.v16), .macOS(.v13)],
+              products: [
+                  .library(name: "Kit", targets: ["Kit"])
+              ],
+              targets: [
+                  .target(name: "Kit")
+              ]
+          )
+          EOF
+          touch LumeRecorder/Kit/Sources/Kit/Placeholder.swift
+          ls -la LumeRecorder/Kit
 
       - name: Build unsigned iOS app
         run: |
