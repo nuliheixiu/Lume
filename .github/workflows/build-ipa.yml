@@ -12,29 +12,36 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Prepare local Kit stub
+      - name: Prepare local package stubs
         run: |
           pwd
-          for dir in "../LumeRecorder/Kit" "LumeRecorder/Kit"; do
-            mkdir -p "$dir/Sources/Kit"
-            cat << 'EOF' > "$dir/Package.swift"
-          // swift-tools-version: 5.9
-          import PackageDescription
+          create_stub() {
+            local base_dir="$1"
+            local pkg_name="$2"
+            mkdir -p "$base_dir/Sources/$pkg_name"
+            cat << EOF > "$base_dir/Package.swift"
+// swift-tools-version: 5.9
+import PackageDescription
 
-          let package = Package(
-              name: "Kit",
-              platforms: [.iOS(.v16), .macOS(.v13)],
-              products: [
-                  .library(name: "Kit", targets: ["Kit"])
-              ],
-              targets: [
-                  .target(name: "Kit")
-              ]
-          )
-          EOF
-            touch "$dir/Sources/Kit/Placeholder.swift"
-          done
-          ls -la ../LumeRecorder/Kit
+let package = Package(
+    name: "$pkg_name",
+    platforms: [.iOS(.v16), .macOS(.v13)],
+    products: [
+        .library(name: "$pkg_name", targets: ["$pkg_name"])
+    ],
+    targets: [
+        .target(name: "$pkg_name")
+    ]
+)
+EOF
+            touch "$base_dir/Sources/$pkg_name/Placeholder.swift"
+          }
+
+          create_stub "../LumeRecorder/Kit" "Kit"
+          create_stub "LumeRecorder/Kit" "Kit"
+          create_stub "../LumeCloud/LumeCloudKit" "LumeCloudKit"
+          create_stub "LumeCloud/LumeCloudKit" "LumeCloudKit"
+          ls -la ../LumeRecorder/Kit ../LumeCloud/LumeCloudKit
 
       - name: Build unsigned iOS app
         run: |
