@@ -16,14 +16,19 @@ jobs:
           submodules: recursive
 
       - name: Select Xcode
+        shell: bash
         run: |
-          if [ -d /Applications/Xcode_26.6.app ]; then
+          set -euo pipefail
+
+          if [[ -d /Applications/Xcode_26.6.app ]]; then
             sudo xcode-select -s /Applications/Xcode_26.6.app
           else
             echo "Xcode_26.6.app is not installed on this runner."
+            echo "Available Xcode installations:"
             ls -1 /Applications | grep '^Xcode' || true
             exit 1
           fi
+
           xcodebuild -version
 
       - name: Prepare missing local package stubs
@@ -82,6 +87,7 @@ jobs:
               for filename in files:
                   if not filename.endswith((".pbxproj", ".swift", "Package.swift")):
                       continue
+
                   path = os.path.join(root, filename)
                   try:
                       with open(path, encoding="utf-8", errors="ignore") as source:
@@ -121,14 +127,17 @@ jobs:
           PY
 
       - name: Resolve dependencies
+        shell: bash
         run: |
+          set -euo pipefail
+
           xcodebuild \
             -resolvePackageDependencies \
             -project Lume.xcodeproj \
             -scheme Lume \
             -derivedDataPath build/DerivedData
 
-      - name: Patch upstream AetherEngine closure syntax
+      - name: Patch upstream AetherEngine benchmark code
         shell: bash
         run: |
           set -euo pipefail
@@ -136,7 +145,6 @@ jobs:
           python3 - <<'PY'
           import glob
           import os
-          import re
           import stat
           import sys
 
@@ -150,27 +158,64 @@ jobs:
                   "Could not find PerFrameBenchmark.swift in the resolved Swift packages."
               )
 
+          replacement = """        let sliceLength = sliceBytes / 4
+                  var sliceNALs: [[UInt8]] = []
+                  sliceNALs.reserveCapacity(4)
+
+                  for i in 0 ..< 4 {
+                      var slice: [UInt8] = [19 << 1, 1]
+                      slice.reserveCapacity(sliceLength + 2)
+
+                      for j in 0 ..< sliceLength {
+                          let value = UInt8(truncatingIfNeeded: j &* 7 &+ i)
+                          slice.append((0x11 &+ value) | 1)
+                      }
+
+                      sliceNALs.append(slice)
+                  }
+
+                  var nals: [[UInt8]] = [[35 << 1, 1, 0x50], sei]
+                  nals.append(contentsOf: sliceNALs)
+
+                  var totalSize = 0
+                  for nal in nals {
+                      totalSize += 4 + nal.count
+                  }
+
+                  var packet: [UInt8] = []
+                  packet.reserveCapacity(totalSize)
+
+                  for nal in nals {
+                      let length = nal.count
+                      packet.append(UInt8((length >> 24) & 0xFF))
+                      packet.append(UInt8((length >> 16) & 0xFF))
+                      packet.append(UInt8((length >> 8) & 0xFF))
+                      packet.append(UInt8(length & 0xFF))
+                      packet.append(contentsOf: nal)
+                  }
+
+                  return packet"""
+
+          start_marker = "        let nals: [[UInt8]] ="
+          end_marker = "\n    }\n\n    private static func deviceName()"
+
           for path in files:
               with open(path, encoding="utf-8") as source:
                   text = source.read()
 
-              corrected = "{ (nal: Any) -> [Any] in"
-              if corrected in text:
-                  print(f"Closure syntax is already corrected: {path}")
+              if "var totalSize = 0" in text and "sliceNALs.reserveCapacity(4)" in text:
+                  print(f"Benchmark code is already patched: {path}")
                   continue
 
-              patched, count = re.subn(
-                  r"\{\s*nal\s+in\b",
-                  corrected,
-                  text,
-                  count=1,
-              )
+              start = text.find(start_marker)
+              if start == -1:
+                  sys.exit(f"Could not find the expected NAL construction in {path}.")
 
-              if count != 1:
-                  sys.exit(
-                      f"Expected to find the unpatched closure in {path}, "
-                      "but no matching `{ nal in` closure was found."
-                  )
+              end = text.find(end_marker, start)
+              if end == -1:
+                  sys.exit(f"Could not find the end of keyFramePacket() in {path}.")
+
+              patched = text[:start] + replacement + text[end:]
 
               current_mode = os.stat(path).st_mode
               os.chmod(path, current_mode | stat.S_IWUSR)
@@ -178,11 +223,14 @@ jobs:
               with open(path, "w", encoding="utf-8") as output:
                   output.write(patched)
 
-              print(f"Patched closure syntax: {path}")
+              print(f"Patched benchmark code for Swift compiler: {path}")
           PY
 
       - name: Build unsigned iOS app
+        shell: bash
         run: |
+          set -euo pipefail
+
           xcodebuild build \
             -project Lume.xcodeproj \
             -scheme Lume \
@@ -199,6 +247,7 @@ jobs:
           set -euo pipefail
 
           APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/Lume.app"
+
           if [[ ! -d "$APP_PATH" ]]; then
             echo "Expected app bundle was not found: $APP_PATH"
             find build/DerivedData/Build/Products -maxdepth 3 -name '*.app' -print || true
