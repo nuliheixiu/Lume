@@ -1,30 +1,64 @@
-name: Build Lume IPA
+name: Build Lume unsigned IPA
 
 on:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build-ios:
     runs-on: macos-latest
     steps:
-      - name: Checkout main repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_26.6.app
-
-      - name: Prepare local package stubs
         run: |
+          if [ -d /Applications/Xcode_26.6.app ]; then
+            sudo xcode-select -s /Applications/Xcode_26.6.app
+          else
+            echo "Xcode_26.6.app is not installed on this runner."
+            ls -1 /Applications | grep '^Xcode' || true
+            exit 1
+          fi
+          xcodebuild -version
+
+      - name: Prepare missing local package stubs
+        shell: bash
+        run: |
+          set -euo pipefail
+
           write_pkg() {
             local dir="$1"
             local pkg_name="$2"
-            local prod_name="$3"
-            mkdir -p "$dir/Sources/$prod_name"
-            printf '// swift-tools-version: 5.9\nimport PackageDescription\nlet package = Package(name: "%s", platforms: [.iOS(.v16), .macOS(.v13)], products: [.library(name: "%s", targets: ["%s"])], targets: [.target(name: "%s", path: "Sources/%s")])\n' "$pkg_name" "$prod_name" "$prod_name" "$prod_name" "$prod_name" > "$dir/Package.swift"
-            touch "$dir/Sources/$prod_name/Placeholder.swift"
-            echo "Prepared stub: $dir (package: $pkg_name, product: $prod_name)"
+            local product_name="$3"
+
+            if [[ -f "$dir/Package.swift" ]]; then
+              echo "Using existing package: $dir"
+              return
+            fi
+
+            mkdir -p "$dir/Sources/$product_name"
+            cat > "$dir/Package.swift" <<EOF
+          // swift-tools-version: 5.9
+          import PackageDescription
+
+          let package = Package(
+              name: "$pkg_name",
+              platforms: [.iOS(.v16), .macOS(.v13)],
+              products: [
+                  .library(name: "$product_name", targets: ["$product_name"])
+              ],
+              targets: [
+                  .target(name: "$product_name")
+              ]
+          )
+          EOF
+            touch "$dir/Sources/$product_name/Placeholder.swift"
+            echo "Created package stub: $dir"
           }
 
           write_pkg "../LumeRecorder/Kit" "Kit" "LumeRecorderKit"
@@ -34,137 +68,153 @@ jobs:
           write_pkg "../LumeEngine" "LumeEngine" "LumeEngine"
           write_pkg "LumeEngine" "LumeEngine" "LumeEngine"
 
-          python3 - << 'PY'
-          import os, re
+          # Create a minimal stub for any other missing sibling package paths
+          # referenced by the project. Existing package manifests are preserved.
+          python3 - <<'PY'
+          import os
+          import re
 
           pattern = re.compile(r'path:\s*"(\.\./[^"]+)"')
-          found = set()
-          for root, _, files in os.walk("."):
-              if ".git" in root or "build" in root:
+          referenced_paths = set()
+
+          for root, dirs, files in os.walk("."):
+              dirs[:] = [directory for directory in dirs if directory not in {".git", "build"}]
+              for filename in files:
+                  if not filename.endswith((".pbxproj", ".swift", "Package.swift")):
+                      continue
+                  path = os.path.join(root, filename)
+                  try:
+                      with open(path, encoding="utf-8", errors="ignore") as source:
+                          referenced_paths.update(
+                              os.path.normpath(match) for match in pattern.findall(source.read())
+                          )
+                  except OSError:
+                      pass
+
+          for package_path in sorted(referenced_paths):
+              if os.path.isfile(os.path.join(package_path, "Package.swift")):
                   continue
-              for fn in files:
-                  if fn.endswith((".pbxproj", ".swift", "Package.swift")):
-                      p = os.path.join(root, fn)
-                      try:
-                          txt = open(p, encoding="utf-8", errors="ignore").read()
-                          for m in pattern.findall(txt):
-                              found.add(os.path.normpath(m))
-                      except OSError:
-                          pass
 
-          for rel in sorted(found):
-              if not os.path.exists(rel):
-                  pkg = os.path.basename(rel)
-                  os.makedirs(os.path.join(rel, "Sources", pkg), exist_ok=True)
-                  with open(os.path.join(rel, "Package.swift"), "w", encoding="utf-8") as f:
-                      f.write(f'// swift-tools-version: 5.9\nimport PackageDescription\nlet package = Package(name: "{pkg}", platforms: [.iOS(.v16), .macOS(.v13)], products: [.library(name: "{pkg}", targets: ["{pkg}"])], targets: [.target(name: "{pkg}")])\n')
-                  open(os.path.join(rel, "Sources", pkg, "Placeholder.swift"), "w").close()
-                  print("Auto-stubbed:", rel)
-          PY
+              package_name = os.path.basename(package_path)
+              source_dir = os.path.join(package_path, "Sources", package_name)
+              os.makedirs(source_dir, exist_ok=True)
 
-      - name: Resolve dependencies and patch PerFrameBenchmark.swift
-        run: |
-          xcodebuild -list -json > xcode_list.json
-          SCHEME=$(python3 - << 'PY'
-          import json
-          d = json.load(open("xcode_list.json"))
-          p = d.get("project") or d.get("workspace") or {}
-          schemes = p.get("schemes") or []
-          candidates = [s for s in schemes if "test" not in s.lower()] or schemes
-          for pref in ["Lume", "Lume-iOS", "Lume iOS"]:
-              if pref in candidates:
-                  print(pref)
-                  break
-          else:
-              print(candidates[0] if candidates else "Lume")
-          PY
+              manifest = f'''// swift-tools-version: 5.9
+          import PackageDescription
+
+          let package = Package(
+              name: "{package_name}",
+              platforms: [.iOS(.v16), .macOS(.v13)],
+              products: [
+                  .library(name: "{package_name}", targets: ["{package_name}"])
+              ],
+              targets: [
+                  .target(name: "{package_name}")
+              ]
           )
-          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
+          '''
+              with open(os.path.join(package_path, "Package.swift"), "w", encoding="utf-8") as output:
+                  output.write(manifest)
 
+              open(os.path.join(source_dir, "Placeholder.swift"), "a").close()
+              print(f"Created package stub: {package_path}")
+          PY
+
+      - name: Resolve dependencies
+        run: |
           xcodebuild \
             -resolvePackageDependencies \
-            -scheme "$SCHEME" \
+            -project Lume.xcodeproj \
+            -scheme Lume \
             -derivedDataPath build/DerivedData
 
-          chmod -R u+w build/DerivedData/SourcePackages/checkouts || true
+      - name: Patch upstream AetherEngine closure syntax
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          python3 - << 'PY'
-          import glob, os, re, stat
+          python3 - <<'PY'
+          import glob
+          import os
+          import re
+          import stat
+          import sys
 
-          files = glob.glob("build/**/PerFrameBenchmark.swift", recursive=True)
+          files = glob.glob(
+              "build/DerivedData/SourcePackages/checkouts/**/PerFrameBenchmark.swift",
+              recursive=True,
+          )
+
           if not files:
-              print("WARNING: PerFrameBenchmark.swift not found under build/")
+              sys.exit(
+                  "Could not find PerFrameBenchmark.swift in the resolved Swift packages."
+              )
 
           for path in files:
-              print("Inspecting:", path)
-              os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
-              with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                  lines = f.readlines()
+              with open(path, encoding="utf-8") as source:
+                  text = source.read()
 
-              start = max(0, 368)
-              end = min(len(lines), 405)
-              print("=== PerFrameBenchmark.swift lines 369..405 ===")
-              for idx in range(start, end):
-                  print(f"{idx + 1}: {lines[idx]}", end="")
+              corrected = "{ (nal: Any) -> [Any] in"
+              if corrected in text:
+                  print(f"Closure syntax is already corrected: {path}")
+                  continue
 
-              # 在 370..396 行范围内查找 flatMap
-              target_idx = None
-              for i in range(max(0, 369), min(len(lines), 396)):
-                  if "flatMap" in lines[i]:
-                      target_idx = i
-                      break
+              patched, count = re.subn(
+                  r"\{\s*nal\s+in\b",
+                  corrected,
+                  text,
+                  count=1,
+              )
 
-              if target_idx is not None:
-                  line = lines[target_idx]
-                  indent = line[:len(line) - len(line.lstrip())]
-                  # 匹配 `{ nal in` 或 `nal in` 或 `{`
-                  if re.search(r'\bnal\s+in\b', line):
-                      new_line = re.sub(r'(\{\s*)nal(\s+in)', r'\1(nal: Any)\2 -> [Any]', line, count=1)
-                      lines[target_idx] = new_line
-                      print(f"PATCH APPLIED (explicit closure type) at line {target_idx + 1}")
-                  elif "{" in line:
-                      lines[target_idx] = line.replace("{", "{ (item: Any) -> [Any] in", 1)
-                      print(f"PATCH APPLIED (closure param+return) at line {target_idx + 1}")
-                  else:
-                      # 若 `{` 在下一行，在下一行补闭包签名
-                      if target_idx + 1 < len(lines) and "{" in lines[target_idx + 1]:
-                          next_l = lines[target_idx + 1]
-                          if re.search(r'\bnal\s+in\b', next_l):
-                              lines[target_idx + 1] = re.sub(r'(\{\s*)nal(\s+in)', r'\1(nal: Any)\2 -> [Any]', next_l, count=1)
-                          else:
-                              lines[target_idx + 1] = next_l.replace("{", "{ (nal: Any) -> [Any] in", 1)
-                          print(f"PATCH APPLIED (multiline closure) at line {target_idx + 2}")
-                      else:
-                          print(f"NO MATCH around flatMap at line {target_idx + 1}")
+              if count != 1:
+                  sys.exit(
+                      f"Expected to find the unpatched closure in {path}, "
+                      "but no matching `{ nal in` closure was found."
+                  )
 
-                  with open(path, "w", encoding="utf-8") as f:
-                      f.writelines(lines)
-              else:
-                  print("NO MATCH: 'flatMap' not found in lines 370..396")
+              current_mode = os.stat(path).st_mode
+              os.chmod(path, current_mode | stat.S_IWUSR)
+
+              with open(path, "w", encoding="utf-8") as output:
+                  output.write(patched)
+
+              print(f"Patched closure syntax: {path}")
           PY
 
       - name: Build unsigned iOS app
         run: |
-          echo "Using scheme: $SCHEME"
-          xcodebuild \
-            -scheme "$SCHEME" \
+          xcodebuild build \
+            -project Lume.xcodeproj \
+            -scheme Lume \
             -configuration Release \
-            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY=""
 
-      - name: Package IPA
+      - name: Package unsigned IPA
+        shell: bash
         run: |
-          APP_PATH=$(find build/DerivedData/Build/Products/Release-iphoneos -name "*.app" -maxdepth 1 | head -n 1)
-          echo "Found app: $APP_PATH"
-          mkdir -p Payload
+          set -euo pipefail
+
+          APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/Lume.app"
+          if [[ ! -d "$APP_PATH" ]]; then
+            echo "Expected app bundle was not found: $APP_PATH"
+            find build/DerivedData/Build/Products -maxdepth 3 -name '*.app' -print || true
+            exit 1
+          fi
+
+          rm -rf Payload Lume-unsigned.ipa
+          mkdir Payload
           cp -R "$APP_PATH" Payload/
-          zip -r Lume-unsigned.ipa Payload
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent Payload Lume-unsigned.ipa
+          ls -lh Lume-unsigned.ipa
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Lume-ipa
+          name: Lume-unsigned-ipa
           path: Lume-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
