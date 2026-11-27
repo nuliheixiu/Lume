@@ -12,6 +12,9 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+
       - name: Prepare local package stubs
         run: |
           write_pkg() {
@@ -58,7 +61,7 @@ jobs:
                   print("Auto-stubbed:", rel)
           PY
 
-      - name: Build unsigned iOS app
+      - name: Resolve dependencies and patch PerFrameBenchmark.swift
         run: |
           xcodebuild -list -json > xcode_list.json
           SCHEME=$(python3 - << 'PY'
@@ -75,6 +78,39 @@ jobs:
               print(candidates[0] if candidates else "Lume")
           PY
           )
+          echo "SCHEME=$SCHEME" >> "$GITHUB_ENV"
+
+          xcodebuild \
+            -resolvePackageDependencies \
+            -scheme "$SCHEME" \
+            -derivedDataPath build/DerivedData
+
+          python3 - << 'PY'
+          import glob
+
+          files = glob.glob("build/DerivedData/SourcePackages/checkouts/**/Sources/AetherEngine/Diagnostics/PerFrameBenchmark.swift", recursive=True)
+          for path in files:
+              print("Inspecting:", path)
+              with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                  lines = f.readlines()
+
+              start = max(0, 370)
+              end = min(len(lines), 415)
+              for idx in range(start, end):
+                  print(f"{idx + 1}: {lines[idx]}", end="")
+
+              # 若第383行附近存在 nals.flatMap { nal in，尝试加上显式返回类型标注缩小推断范围
+              for i in range(max(0, 375), min(len(lines), 395)):
+                  if "nals.flatMap" in lines[i] and "{" in lines[i] and "->" not in lines[i]:
+                      lines[i] = lines[i].replace("{ nal in", "{ (nal: Any) -> [Any] in")
+                      with open(path, "w", encoding="utf-8") as f:
+                          f.writelines(lines)
+                      print(f"Annotated closure at line {i + 1}")
+                      break
+          PY
+
+      - name: Build unsigned iOS app
+        run: |
           echo "Using scheme: $SCHEME"
           xcodebuild \
             -scheme "$SCHEME" \
