@@ -1,4 +1,3 @@
-```yaml
 name: Build Lume IPA
 
 on:
@@ -138,5 +137,3 @@ jobs:
         with:
           name: Lume-ipa
           path: Lume-unsigned.ipa
-
-```
